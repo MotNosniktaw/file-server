@@ -4,13 +4,16 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 )
 
-const DATA_DIR = "./data"
+const DATA_DIR = "./data/"
 const MANIFEST_PATH = "./manifest.txt"
 
 type File struct {
@@ -24,6 +27,68 @@ func main() {
 
 	// Generate the file manifest
 	generateFileManifest()
+
+	startServer()
+}
+
+func startServer() {
+	mux := http.NewServeMux()
+
+	// Start the server
+	mux.HandleFunc("/manifest", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Read the manifest file
+		file, err := os.ReadFile(MANIFEST_PATH)
+		if err != nil {
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write(file)
+	})
+
+	mux.HandleFunc("/data/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println("Handling request for", r.URL.Path)
+		if r.Method != "GET" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		filePath := strings.TrimPrefix(r.URL.Path, "/data/")
+
+		// Read the file from the data directory
+		file, err := os.Open(DATA_DIR + filePath)
+		if err != nil {
+			fmt.Println(err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		defer file.Close()
+
+		w.Header().Set("Content-Type", "application/octet-stream")
+
+		b := make([]byte, 4096)
+		for {
+			n, err := file.Read(b)
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				http.Error(w, "Internal server error", http.StatusInternalServerError)
+				return
+			}
+
+			w.Write(b[:n])
+		}
+	})
+
+	http.ListenAndServe(":8080", mux)
 }
 
 func createData() {
@@ -31,7 +96,6 @@ func createData() {
 	createFile("data/top.txt")
 	createFile("data/middle/middle.txt")
 	createFile("data/middle/bottom/bottom.txt")
-
 }
 
 func createFile(name string) error {
@@ -44,7 +108,7 @@ func createFile(name string) error {
 		log.Fatalln(err)
 	}
 
-	bytes := make([]byte, 1024)
+	bytes := make([]byte, 500000)
 	rand.Read(bytes)
 	file.Write(bytes)
 
@@ -77,11 +141,11 @@ func checkDirectory(dir string) []File {
 
 	// For each file, check if it is a directory or a file
 	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if info.IsDir() {
-		} else {
+		if !info.IsDir() {
 			// Generate a hash and add the file to the manifest
+			relPath, _ := filepath.Rel(DATA_DIR, path)
 			hash := generateHash(path)
-			files = append(files, File{path, hash})
+			files = append(files, File{relPath, hash})
 		}
 		return nil
 	})
